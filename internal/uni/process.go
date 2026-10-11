@@ -406,11 +406,10 @@ func (runner *commandRunner) runWithTelemetry(ctx context.Context, mode, phase, 
 		"UNI_R8_MODULES_FILE=" + filepath.Join(filepath.Dir(statePath), "soong_r8_modules.txt"),
 		"UNI_NINJA_PHASE=" + phase,
 	}
-	// soong_ui only skips its source finder when the product and module lists
-	// already exist. A missing out/.module_paths makes kati unable to see products.
-	if soongModulePathsReady(runner.outDir) {
-		overrides = append(overrides, "_SOONG_INTERNAL_NO_FINDER=true")
-	}
+	// Graph preparation must refresh module lists after source changes. Only
+	// execution against an already prepared graph can reuse those lists.
+	skipFinder := mode == "--uni-ninja-mode" && soongModulePathsReady(runner.outDir)
+	overrides = append(overrides, "_SOONG_INTERNAL_NO_FINDER="+strconv.FormatBool(skipFinder))
 	if tui != nil && tui.statusSocket != "" {
 		overrides = append(overrides, "UNI_STATUS_SOCKET="+tui.statusSocket)
 	}
