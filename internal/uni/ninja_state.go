@@ -149,7 +149,16 @@ func apiNinjaOutput(output string) bool {
 
 func restatAPIOutput(output string) bool {
 	normalized := filepath.ToSlash(output)
-	if !strings.Contains(normalized, "/.intermediates/") || !strings.Contains(normalized, "/everything/") {
+	if !strings.Contains(normalized, "/.intermediates/") {
+		return false
+	}
+	if strings.Contains(normalized, "/exportable/") {
+		return strings.HasSuffix(normalized, "-stubs.srcjar") ||
+			strings.HasSuffix(normalized, "_annotations.zip") ||
+			strings.HasSuffix(normalized, "_api.txt") ||
+			strings.HasSuffix(normalized, "_removed.txt")
+	}
+	if !strings.Contains(normalized, "/everything/") {
 		return false
 	}
 	return strings.HasSuffix(normalized, "_api.txt") ||

@@ -48,18 +48,6 @@ func TestAPINinjaOutput(t *testing.T) {
 
 func TestFilterNinjaLogKeepsRestatAPIOutput(t *testing.T) {
 	outDir := t.TempDir()
-	output := "out/soong/.intermediates/frameworks/base/api/api-stubs-docs-non-updatable/android_common/everything/api-stubs-docs-non-updatable_api.txt"
-	outputPath := filepath.Join(outDir, filepath.FromSlash(output))
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(outputPath, []byte("unchanged API"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(outputPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	regularOutput := "out/not-restat.txt"
 	regularPath := filepath.Join(outDir, filepath.FromSlash(regularOutput))
 	if err := os.MkdirAll(filepath.Dir(regularPath), 0755); err != nil {
@@ -72,28 +60,72 @@ func TestFilterNinjaLogKeepsRestatAPIOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loggedMtime := info.ModTime().Add(time.Second).UnixNano()
-	data, err := readNinjaLog(writeTestNinjaLog(t, outDir,
-		fmt.Sprintf("1\t2\t%d\t%s\thash", loggedMtime, filepath.ToSlash(output)),
-		fmt.Sprintf("3\t4\t%d\t%s\thash", regularInfo.ModTime().Add(time.Second).UnixNano(), regularOutput)))
+	outputs := []struct {
+		path string
+		body string
+	}{
+		{
+			path: "out/soong/.intermediates/frameworks/base/api/api-stubs-docs-non-updatable/android_common/everything/api-stubs-docs-non-updatable_api.txt",
+			body: "unchanged API",
+		},
+		{
+			path: "out/soong/.intermediates/packages/modules/Bluetooth/framework/framework-bluetooth.stubs.source/android_common/exportable/framework-bluetooth.stubs.source_api.txt",
+			body: "unchanged exported API",
+		},
+		{
+			path: "out/soong/.intermediates/packages/modules/Bluetooth/framework/framework-bluetooth.stubs.source/android_common/exportable/framework-bluetooth.stubs.source-stubs.srcjar",
+			body: "unchanged exported stubs",
+		},
+		{
+			path: "out/soong/.intermediates/frameworks/base/api/api-stubs-docs-non-updatable/android_common/exportable/api-stubs-docs-non-updatable_api.txt",
+			body: "unchanged exported API docs",
+		},
+	}
+	entries := make([]string, 0, len(outputs)+1)
+	for index, output := range outputs {
+		outputPath := filepath.Join(outDir, filepath.FromSlash(output.path))
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(outputPath, []byte(output.body), 0644); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(outputPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, fmt.Sprintf("%d\t%d\t%d\t%s\thash", index+1, index+2,
+			info.ModTime().Add(time.Second).UnixNano(), filepath.ToSlash(output.path)))
+	}
+	entries = append(entries, fmt.Sprintf("4\t5\t%d\t%s\thash", regularInfo.ModTime().Add(time.Second).UnixNano(), regularOutput))
+	data, err := readNinjaLog(writeTestNinjaLog(t, outDir, entries...))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	filtered := filterNinjaLogByOutputs(data, outDir)
-	if _, ok := filtered.lines[output]; !ok {
-		t.Fatal("interrupted-output recovery discarded a valid Metalava restat output")
+	for _, output := range outputs {
+		if _, ok := filtered.lines[output.path]; !ok {
+			t.Errorf("interrupted-output recovery discarded valid Metalava restat output %q", output.path)
+		}
 	}
 	if _, ok := filtered.lines[regularOutput]; ok {
 		t.Fatal("interrupted-output recovery retained an ordinary output with mismatched mtime")
 	}
 	filtered = filterNinjaLogByInterruptedOutputs(filtered, outDir)
-	if _, ok := filtered.lines[output]; !ok {
-		t.Fatal("interrupted-output validation discarded a valid Metalava restat output")
+	for _, output := range outputs {
+		if _, ok := filtered.lines[output.path]; !ok {
+			t.Errorf("interrupted-output validation discarded valid Metalava restat output %q", output.path)
+		}
 	}
 	filtered = filterNinjaLogByAPIOutputs(filtered, outDir, false)
-	if _, ok := filtered.lines[output]; !ok {
-		t.Fatal("restat API output with a newer logged input mtime was discarded")
+	for _, output := range outputs {
+		if !apiNinjaOutput(output.path) {
+			continue
+		}
+		if _, ok := filtered.lines[output.path]; !ok {
+			t.Errorf("restat API output with a newer logged input mtime was discarded: %q", output.path)
+		}
 	}
 }
 
