@@ -26,6 +26,7 @@ const (
 	compactTUILineBytes       = 4096
 	compactTUIWriteBuffer     = 256 * 1024
 	compactTUICaptureTimeout  = 2 * time.Second
+	compactTUIStartupLogLines = 20
 )
 
 var compactTUISpinner = []rune{'|', '/', '-', '\\'}
@@ -143,6 +144,7 @@ type compactTUI struct {
 	statusSocket        string
 	actions             []compactRunningAction
 	progressDescription string
+	startupLogs         []string
 	actionTick          time.Time
 	terminalSize        terminalSize
 	altScreen           bool
@@ -400,6 +402,12 @@ func (tui *compactTUI) consume(line string) {
 		target.latest = displayLine
 		target.activity = ""
 	}
+	if strings.HasPrefix(line, "uni: startup:") {
+		tui.startupLogs = append(tui.startupLogs, line)
+		if len(tui.startupLogs) > compactTUIStartupLogLines {
+			tui.startupLogs = tui.startupLogs[len(tui.startupLogs)-compactTUIStartupLogLines:]
+		}
+	}
 	target.logs.add(line)
 	if percent, done, total, ok := parseCompactProgress(line); ok {
 		target.percent = percent
@@ -456,6 +464,7 @@ func (tui *compactTUI) consumeStatusEvent(event compactStatusEvent, connectionID
 			task.eta = ""
 		}
 	case "start":
+		tui.startupLogs = nil
 		started := time.Now()
 		if event.StartedUnixNano > 0 {
 			started = time.Unix(0, event.StartedUnixNano)
@@ -707,6 +716,52 @@ func compactANSI(enabled bool, style, value string) string {
 	return "\x1b[" + style + "m" + value + "\x1b[0m"
 }
 
+type compactRGB struct {
+	r int
+	g int
+	b int
+}
+
+var compactBuildTemperature = []struct {
+	elapsed time.Duration
+	color   compactRGB
+}{
+	{0, compactRGB{255, 255, 255}},
+	{10 * time.Second, compactRGB{255, 246, 232}},
+	{30 * time.Second, compactRGB{255, 235, 150}},
+	{60 * time.Second, compactRGB{255, 195, 45}},
+	{100 * time.Second, compactRGB{255, 112, 20}},
+	{150 * time.Second, compactRGB{255, 38, 38}},
+}
+
+func compactBuildTemperatureColor(elapsed time.Duration) compactRGB {
+	if elapsed <= compactBuildTemperature[0].elapsed {
+		return compactBuildTemperature[0].color
+	}
+	for index := 1; index < len(compactBuildTemperature); index++ {
+		next := compactBuildTemperature[index]
+		if elapsed > next.elapsed {
+			continue
+		}
+		previous := compactBuildTemperature[index-1]
+		progress := float64(elapsed-previous.elapsed) / float64(next.elapsed-previous.elapsed)
+		return compactRGB{
+			r: previous.color.r + int(float64(next.color.r-previous.color.r)*progress),
+			g: previous.color.g + int(float64(next.color.g-previous.color.g)*progress),
+			b: previous.color.b + int(float64(next.color.b-previous.color.b)*progress),
+		}
+	}
+	return compactBuildTemperature[len(compactBuildTemperature)-1].color
+}
+
+func compactTemperatureANSI(enabled bool, elapsed time.Duration, value string) string {
+	if !enabled || value == "" {
+		return value
+	}
+	color := compactBuildTemperatureColor(elapsed)
+	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm%s\x1b[0m", color.r, color.g, color.b, value)
+}
+
 func compactBold(value string) string {
 	if value == "" {
 		return value
@@ -731,7 +786,8 @@ func (tui *compactTUI) taskLine(task *compactTask) string {
 		return fmt.Sprintf("%s × %s  %s", prefix, tui.messages.failed, compactDuration(duration))
 	case compactTaskRunning:
 		spinner := string(compactTUISpinner[tui.spinner%len(compactTUISpinner)])
-		line := fmt.Sprintf("%s %s %s  %s  %s=%d", prefix, spinner, tui.messages.building, compactDuration(duration), tui.messages.jobs, task.jobs)
+		durationText := compactDuration(duration)
+		line := fmt.Sprintf("%s %s %s  %s  %s=%d", prefix, spinner, tui.messages.building, durationText, tui.messages.jobs, task.jobs)
 		if task.activity != "" {
 			line += "  " + task.activity
 		}
@@ -798,7 +854,9 @@ func (tui *compactTUI) frame(force bool) string {
 			case compactTaskFailed:
 				style = "1;31"
 			}
-			line = "\x1b[" + style + "m" + line + "\x1b[0m"
+			if style != "" {
+				line = "\x1b[" + style + "m" + line + "\x1b[0m"
+			}
 		}
 		body = append(body, line)
 	}
@@ -931,33 +989,22 @@ func compactActionPane(tui *compactTUI, height, width, lineWidth int) []string {
 			rows[1] = compactBold(line)
 		}
 	}
-	visibleActions := height - 3
-	if visibleActions > len(tui.actions) {
-		visibleActions = len(tui.actions)
-	}
-	for index := 0; index < visibleActions; index++ {
-		action := tui.actions[index]
-		elapsed := time.Since(action.started).Round(time.Second)
-		if elapsed < 0 {
-			elapsed = 0
+	visibleRows := height - 3
+	if len(tui.startupLogs) > 0 {
+		count := min(visibleRows, len(tui.startupLogs))
+		logs := tui.startupLogs[len(tui.startupLogs)-count:]
+		for index, logLine := range logs {
+			rows[index+2] = truncateCompactLine("   "+logLine, lineWidth)
 		}
-		seconds := int(elapsed.Seconds())
-		duration := fmt.Sprintf("%2d:%02d ", seconds/60, seconds%60)
-		description := action.description
-		if description == "" {
-			description = "action"
+		visibleRows -= count
+		for index := 0; index < visibleRows && index < len(tui.actions); index++ {
+			action := tui.actions[index]
+			rows[index+2+count] = compactActionLine(tui, action, lineWidth)
 		}
-		line := truncateCompactLine("   "+duration+description, lineWidth)
-		style := ""
-		if tui.color && seconds >= 60 {
-			style = "1;31"
-		} else if tui.color && seconds >= 30 {
-			style = "1;33"
+	} else {
+		for index := 0; index < visibleRows && index < len(tui.actions); index++ {
+			rows[index+2] = compactActionLine(tui, tui.actions[index], lineWidth)
 		}
-		if style != "" {
-			line = strings.Replace(line, duration, compactANSI(true, style, duration), 1)
-		}
-		rows[index+2] = line
 	}
 	footer := tui.messages.footer
 	if tui.copyMode {
@@ -965,6 +1012,24 @@ func compactActionPane(tui *compactTUI, height, width, lineWidth int) []string {
 	}
 	rows[height-1] = compactANSI(tui.color, "2", truncateCompactLine(footer, lineWidth))
 	return rows
+}
+
+func compactActionLine(tui *compactTUI, action compactRunningAction, lineWidth int) string {
+	elapsed := time.Since(action.started).Round(time.Second)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	seconds := int(elapsed.Seconds())
+	duration := fmt.Sprintf("%2d:%02d ", seconds/60, seconds%60)
+	description := action.description
+	if description == "" {
+		description = "action"
+	}
+	line := truncateCompactLine("   "+duration+description, lineWidth)
+	if tui.color {
+		line = strings.Replace(line, duration, compactTemperatureANSI(true, time.Since(action.started), duration), 1)
+	}
+	return line
 }
 
 func compactFrameLines(frame string) int {

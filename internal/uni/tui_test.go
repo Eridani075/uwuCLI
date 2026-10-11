@@ -64,6 +64,24 @@ func TestCompactColorRespectsTerminalAndNoColor(t *testing.T) {
 	}
 }
 
+func TestCompactBuildTemperatureUsesElapsedTimeAndTrueColor(t *testing.T) {
+	for _, point := range compactBuildTemperature {
+		if got := compactBuildTemperatureColor(point.elapsed); got != point.color {
+			t.Errorf("temperature at %s = %+v, want %+v", point.elapsed, got, point.color)
+		}
+	}
+	if got := compactBuildTemperatureColor(20 * time.Second); got.g >= compactBuildTemperature[1].color.g ||
+		got.g <= compactBuildTemperature[2].color.g {
+		t.Fatalf("intermediate color was not smoothly interpolated: %+v", got)
+	}
+	if got := compactTemperatureANSI(false, time.Hour, "1h0m0s"); got != "1h0m0s" {
+		t.Fatalf("disabled colors changed timer output: %q", got)
+	}
+	if got := compactTemperatureANSI(true, time.Hour, "1h0m0s"); !strings.Contains(got, "\x1b[38;2;255;38;38m1h0m0s\x1b[0m") {
+		t.Fatalf("timer did not use 24-bit ANSI color: %q", got)
+	}
+}
+
 func TestCompactTUIReflectsRuntimeParallelismChanges(t *testing.T) {
 	tui := newCompactTUI(nil, nil)
 	tui.phaseStarted("ninja", 18)
@@ -114,13 +132,13 @@ func TestCompactDisplayLinePreservesColorsAndProgress(t *testing.T) {
 func TestCompactTUIR8Status(t *testing.T) {
 	tui := newCompactTUI(nil, nil)
 	idle := tui.frame(true)
-	if !strings.Contains(idle, "R8        □ idle") || strings.Contains(idle, "0 running") {
+	if !strings.Contains(sanitizeCompactLine(idle), "R8        □ idle") || strings.Contains(idle, "0 running") {
 		t.Fatalf("idle R8 status is misleading: %q", idle)
 	}
 
 	tui.updateTelemetry(TelemetrySample{R8: 3})
 	active := tui.frame(true)
-	if !strings.Contains(active, "R8        3 running") {
+	if !strings.Contains(sanitizeCompactLine(active), "R8        3 running") {
 		t.Fatalf("active R8 status is missing: %q", active)
 	}
 }
@@ -158,10 +176,13 @@ func TestCompactTUIShowsSemanticColorsAndETA(t *testing.T) {
 	tui := newCompactTUI(nil, nil)
 	tui.color = true
 	tui.phaseStarted("ninja", 9)
+	tui.byName["Main"].started = time.Now().Add(-20 * time.Second)
 	tui.consume("[ 79% 15175/19054 4m2s remaining] target")
 	frame := tui.frame(true)
-	if !strings.Contains(frame, "\x1b[1;36m") || !strings.Contains(frame, "eta 4m2s") {
-		t.Fatalf("running state color or ETA is missing: %q", frame)
+	if !strings.Contains(frame, "\x1b[1;36m  Main") ||
+		strings.Contains(frame, "\x1b[38;2;") ||
+		!strings.Contains(frame, "eta 4m2s") {
+		t.Fatalf("task row should keep its original styling and ETA without temperature color: %q", frame)
 	}
 	tui.phaseFinished("ninja", nil)
 	if frame := tui.frame(true); !strings.Contains(frame, "\x1b[32m") {
@@ -190,7 +211,7 @@ func TestCompactTUIShowsStructuredRunningActionsAndElapsedTime(t *testing.T) {
 		StartedUnixNano: time.Now().Add(-75 * time.Second).UnixNano(),
 	}, 1)
 	frame := tui.frame(true)
-	if !strings.Contains(frame, "1:15 compile framework component") ||
+	if !strings.Contains(sanitizeCompactLine(frame), "1:15 compile framework component") ||
 		!strings.Contains(frame, "[  0% 0/23 ") || !strings.Contains(frame, "remaining] compile framework component") {
 		t.Fatalf("structured action details missing from frame: %q", frame)
 	}
@@ -218,11 +239,11 @@ func TestCompactTUIShowsStructuredRunningActionsAndElapsedTime(t *testing.T) {
 			t.Errorf("expected bold/color emphasis %q in frame: %q", style, styleFrame)
 		}
 	}
-	if !strings.Contains(styleFrame, "0:00 quick target") {
+	if !strings.Contains(sanitizeCompactLine(styleFrame), "0:00 quick target") {
 		t.Errorf("short action timer is missing: %q", styleFrame)
 	}
-	if !strings.Contains(frame, "\x1b[1;31m") {
-		t.Errorf("expected long-running action warning color in frame: %q", frame)
+	if !strings.Contains(frame, "\x1b[38;2;") {
+		t.Errorf("expected elapsed-time temperature color in frame: %q", frame)
 	}
 	tui.consumeStatusEvent(compactStatusEvent{Type: "finish", ID: 7}, 1)
 	if len(tui.actions) != 0 || tui.byName["Main"].done != 1 || tui.byName["Main"].total != 23 {
@@ -537,7 +558,7 @@ func TestCompactActionPaneScalesWithTerminalHeight(t *testing.T) {
 	}
 }
 
-func TestCompactActionPaneColorsOnlyLongRunningTimers(t *testing.T) {
+func TestCompactActionPaneColorsElapsedTimersOnly(t *testing.T) {
 	tui := newCompactTUI(nil, nil)
 	tui.color = true
 	tui.actions = []compactRunningAction{
@@ -545,11 +566,11 @@ func TestCompactActionPaneColorsOnlyLongRunningTimers(t *testing.T) {
 		{description: "red target", started: time.Now().Add(-61 * time.Second)},
 	}
 	rows := compactActionPane(tui, 5, 80, 77)
-	if !strings.Contains(rows[2], "\x1b[1;33m 0:31 \x1b[0m") || !strings.Contains(rows[2], "yellow target") {
-		t.Fatalf("30-second timer warning is missing: %q", rows[2])
+	if !strings.Contains(rows[2], "\x1b[38;2;") || !strings.Contains(rows[2], "m 0:31 \x1b[0m") || !strings.Contains(rows[2], "yellow target") {
+		t.Fatalf("elapsed-time temperature is missing: %q", rows[2])
 	}
-	if !strings.Contains(rows[3], "\x1b[1;31m 1:01 \x1b[0m") || !strings.Contains(rows[3], "red target") {
-		t.Fatalf("60-second timer warning is missing: %q", rows[3])
+	if !strings.Contains(rows[3], "\x1b[38;2;") || !strings.Contains(rows[3], "m 1:01 \x1b[0m") || !strings.Contains(rows[3], "red target") {
+		t.Fatalf("elapsed-time temperature is missing: %q", rows[3])
 	}
 	if strings.Contains(strings.Split(rows[2], "\x1b[0m")[1], "\x1b[") ||
 		strings.Contains(strings.Split(rows[3], "\x1b[0m")[1], "\x1b[") {
@@ -557,6 +578,25 @@ func TestCompactActionPaneColorsOnlyLongRunningTimers(t *testing.T) {
 	}
 	if len(rows[0]) != 80 || !strings.Contains(rows[4], "Ctrl+C Stop") {
 		t.Fatalf("full-width divider or bottom operation bar missing: %q", rows)
+	}
+}
+
+func TestCompactActionPaneShowsStartupLogsUntilActionsStart(t *testing.T) {
+	tui := newCompactTUI(nil, nil)
+	tui.color = true
+	tui.consume("uni: startup: checking for leftover build processes")
+	tui.consume("uni: startup: process check finished in 9ms")
+	rows := compactActionPane(tui, 5, 100, 97)
+	if !strings.Contains(rows[2], "uni: startup: checking for leftover build processes") ||
+		!strings.Contains(rows[3], "uni: startup: process check finished in 9ms") {
+		t.Fatalf("startup logs are missing or out of order below the divider: %q", rows)
+	}
+
+	tui.consumeStatusEvent(compactStatusEvent{Type: "start", ID: 1, Description: "compile Kotlin"}, 1)
+	rows = compactActionPane(tui, 5, 100, 97)
+	if strings.Contains(strings.Join(rows, "\n"), "uni: startup:") ||
+		!strings.Contains(sanitizeCompactLine(rows[2]), "compile Kotlin") {
+		t.Fatalf("startup logs were not replaced by live action status: %q", rows)
 	}
 }
 
