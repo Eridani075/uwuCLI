@@ -65,6 +65,7 @@ func TestSourceGraphFingerprintCacheMatchesLegacyWalkAndRefreshesChanges(t *test
 	for _, directory := range []string{
 		filepath.Join(root, "device", "sample"),
 		filepath.Join(root, "build", "soong"),
+		filepath.Join(root, "build", "blueprint"),
 		filepath.Join(root, ".git"),
 		filepath.Join(outDir, "uni"),
 	} {
@@ -88,6 +89,7 @@ func TestSourceGraphFingerprintCacheMatchesLegacyWalkAndRefreshesChanges(t *test
 	baseTime := time.Unix(1_800_000_000, 0)
 	write("device/sample/Android.bp", "filegroup { name: \"base\" }\n", baseTime)
 	write("build/soong/graph_input.go", "package soong\n", baseTime)
+	write("build/blueprint/.git", "gitdir: ../.git/worktrees/blueprint\n", baseTime)
 	write("device/sample/ignored.txt", "ignored\n", baseTime)
 	write(".git/Android.bp", "ignored\n", baseTime)
 

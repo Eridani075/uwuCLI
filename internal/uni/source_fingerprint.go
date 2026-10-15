@@ -54,6 +54,9 @@ type sourceGraphChild struct {
 }
 
 func sourceGraphFile(relative, name string) bool {
+	if name == ".repo" || name == ".git" || name == ".codegraph" {
+		return false
+	}
 	if name == "Android.bp" || name == "Blueprints" || strings.HasSuffix(name, ".mk") {
 		return true
 	}
@@ -87,6 +90,9 @@ func sourceGraphFingerprintWithProgress(sourceRoot, outDir string, progress bool
 	if cacheErr == nil {
 		next, stats, err = refreshSourceGraphCache(root, outDir, cache, started, progress)
 	} else {
+		if progress {
+			fmt.Printf("uni: source input cache unavailable at %s: %v; scanning from scratch\n", cachePath, cacheErr)
+		}
 		next, stats, err = scanSourceGraphFromScratch(root, outDir, started, progress)
 	}
 	if err != nil {
