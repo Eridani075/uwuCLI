@@ -556,6 +556,13 @@ func Run(ctx context.Context, options Options) error {
 		if err == nil {
 			report.event("build result=success phases=%d min_mem_available=%s swap_out=%s",
 				summary.phases, formatBytes(summary.minimumAvailable), formatBytes(int64(summary.swapOutBytes)))
+			if options.Install {
+				if installErr := installTargetAPK(ctx, top, state, options.Targets[0], options.InstallTarget); installErr != nil {
+					report.event("install result=failed target=%q error=%q", options.Targets[0], installErr)
+					return fmt.Errorf("build succeeded but installing %s failed: %w", options.Targets[0], installErr)
+				}
+				report.event("install result=success target=%q", options.Targets[0])
+			}
 			printBuildComplete(started, summary, state, nil)
 		}
 		return err

@@ -54,6 +54,40 @@ func TestParseOptionsModuleBuild(t *testing.T) {
 	}
 }
 
+func TestParseOptionsInstall(t *testing.T) {
+	for _, args := range [][]string{
+		{"-i", "SystemUI"},
+		{"--install", "SystemUI"},
+		{"-t", "emulator-5554", "-i", "SystemUI"},
+		{"--target=emulator-5554", "--install", "SystemUI"},
+	} {
+		options, err := ParseOptions(args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !options.Install || !reflect.DeepEqual(options.Targets, []string{"SystemUI"}) ||
+			!reflect.DeepEqual(options.BuildArgs, []string{"SystemUI"}) {
+			t.Fatalf("%v produced unexpected options: %+v", args, options)
+		}
+		if strings.Contains(strings.Join(args, " "), "emulator-5554") && options.InstallTarget != "emulator-5554" {
+			t.Fatalf("device target was not parsed from %v: %+v", args, options)
+		}
+	}
+	for _, args := range [][]string{
+		{"--install"},
+		{"--install", "SystemUI", "Launcher3QuickStep"},
+		{"--install", "droid"},
+		{"--install", "--plan", "SystemUI"},
+		{"--install", "uwu"},
+		{"--target", "emulator-5554", "SystemUI"},
+		{"--install", "-t"},
+	} {
+		if _, err := ParseOptions(args); err == nil {
+			t.Fatalf("invalid install options were accepted: %v", args)
+		}
+	}
+}
+
 func TestParseOptionsReleasePackageAliases(t *testing.T) {
 	tests := []struct {
 		alias  string

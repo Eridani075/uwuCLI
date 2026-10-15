@@ -41,6 +41,8 @@ type Options struct {
 	AssumeExisting  bool
 	ForceReuse      bool
 	CleanLogs       bool
+	Install         bool
+	InstallTarget   string
 	InitSigningKeys string
 	SignKeys        string
 	SignConfig      string
@@ -85,6 +87,8 @@ Options:
   --debug              Write a detailed report to OUT_DIR (default)
   --no-debug           Disable the detailed report for this run
   --clean-logs         Remove build logs without touching build outputs
+  -i, --install        Install the single APK target after a successful build
+  -t, --target SERIAL  Select the Android device for --install
   --init-signing-keys=DIR  Generate release keys once outside the source tree
   --sign-keys=DIR      Build and sign an OTA with keys from DIR
   --sign-path=DIR      Write signed packages to DIR
@@ -125,6 +129,8 @@ const usageChinese = `用法: uni [选项] [目标...]
   --debug              在 OUT_DIR 写入详细调试报告（默认开启）
   --no-debug           本次关闭详细调试报告
   --clean-logs         清理构建日志，不删除编译产物
+  -i, --install        单个 APK 目标构建成功后安装
+  -t, --target 序列号  指定 --install 使用的 Android 设备
   --init-signing-keys=目录  在源码树外一次性生成发布密钥
   --sign-keys=目录      使用目录中的密钥构建并签名 OTA
   --sign-path=目录      指定签名产物目录
@@ -282,6 +288,19 @@ func ParseOptions(args []string) (Options, error) {
 		case "--clean-logs":
 			options.CleanLogs = true
 			continue
+		case "-i", "--install":
+			options.Install = true
+			continue
+		case "-t":
+			value, _, err := customValue(args, &i, "-t")
+			if err != nil {
+				return Options{}, err
+			}
+			if strings.TrimSpace(value) == "" || strings.HasPrefix(value, "-") {
+				return Options{}, fmt.Errorf("-t requires a device serial")
+			}
+			options.InstallTarget = value
+			continue
 		case "--sign-check":
 			options.SignCheck = true
 			continue
@@ -316,6 +335,16 @@ func ParseOptions(args []string) (Options, error) {
 			}
 			options.BuildArgs = append(options.BuildArgs, target)
 			options.Targets = append(options.Targets, target)
+			continue
+		}
+		if value, matched, err := customValue(args, &i, "--target"); matched {
+			if err != nil {
+				return Options{}, err
+			}
+			if strings.TrimSpace(value) == "" || strings.HasPrefix(value, "-") {
+				return Options{}, fmt.Errorf("--target requires a device serial")
+			}
+			options.InstallTarget = value
 			continue
 		}
 		if value, matched, err := customValue(args, &i, "--batch-size"); matched {
@@ -468,6 +497,17 @@ func ParseOptions(args []string) (Options, error) {
 				options.FullBuild = true
 			}
 		}
+	}
+	if options.Install {
+		if len(options.Targets) != 1 {
+			return Options{}, fmt.Errorf("--install requires exactly one explicit build target")
+		}
+		if options.Plan || options.FullBuild || options.PackageMode != "" || options.SignCheck ||
+			options.SignKeys != "" || options.CleanLogs || options.InitSigningKeys != "" {
+			return Options{}, fmt.Errorf("--install can only be used with a single-phase module build")
+		}
+	} else if options.InstallTarget != "" {
+		return Options{}, fmt.Errorf("--target can only be used with --install")
 	}
 	expectedPackageTargets := 1
 	if options.PackageMode == packageModeBoth {
