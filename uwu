@@ -1116,12 +1116,14 @@ vendor_convert_radio() {
     fi
 
     local radio_bp="$vendor_root/radio/Android.bp"
+    local radio_namespace="$(relative_path "$vendor_root")/radio"
     mkdir -p -- "$(dirname -- "$radio_bp")"
     {
-        printf '//\n// Automatically generated file. DO NOT MODIFY\n//\n\n'
+        printf '// SPDX-FileCopyrightText: The uwuAOSP Project\n// SPDX-License-Identifier: Apache-2.0\n// Automatically generated file. DO NOT MODIFY\n\n'
+        printf 'soong_namespace {}\n\n'
         for (( i = 0; i < n; i++ )); do
-            printf 'uwu_prebuilt_image {\n    name: "%s",\n    src: "%s",\n    sha1: "%s",\n}\n\n' \
-                "${radio_names[$i]}" "$(basename "${radio_paths[$i]}")" "${radio_sha1s[$i]}"
+            printf 'uwu_prebuilt_image {\n    name: "uwu_radio_%s",\n    filename: "%s.img",\n    src: "%s",\n    sha1: "%s",\n    visibility: ["//visibility:public"],\n}\n\n' \
+                "${radio_names[$i]}" "${radio_names[$i]}" "$(basename "${radio_paths[$i]}")" "${radio_sha1s[$i]}"
         done
     } > "$radio_bp"
 
@@ -1134,17 +1136,23 @@ vendor_convert_radio() {
                 printf '    %s \\\n' "${radio_names[$i]}"
             fi
         done
+        printf '\n# Resolve firmware modules independently of partition names.\n'
+        for (( i = 0; i < n; i++ )); do
+            printf '$(call soong_config_set,uwuRadio,%s,//%s:uwu_radio_%s)\n' \
+                "${radio_names[$i]}" "$radio_namespace" "${radio_names[$i]}"
+        done
     } >> "$vendor_root/BoardConfigVendor.mk"
 
     local vendor_mk="$vendor_root/$(basename -- "$device_dir")-vendor.mk"
     if [[ -f "$vendor_mk" ]]; then
         {
+            printf '\nPRODUCT_SOONG_NAMESPACES += %s\n' "$radio_namespace"
             printf '\nPRODUCT_PACKAGES += \\\n'
             for (( i = 0; i < n; i++ )); do
                 if (( i == n - 1 )); then
-                    printf '    %s\n' "${radio_names[$i]}"
+                    printf '    uwu_radio_%s\n' "${radio_names[$i]}"
                 else
-                    printf '    %s \\\n' "${radio_names[$i]}"
+                    printf '    uwu_radio_%s \\\n' "${radio_names[$i]}"
                 fi
             done
         } >> "$vendor_mk"
