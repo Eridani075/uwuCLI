@@ -16,6 +16,8 @@ type parallelismControl interface {
 // Changes admission only. It has no process handles and cannot signal or cancel a task.
 type adaptiveParallelism struct {
 	jobs, ceiling int
+	limit         int
+	boostAllowed  bool
 	pressure      memoryPressureGuard
 	ramp          runaParallelismRamp
 	nextChange    time.Time
@@ -52,8 +54,23 @@ func (state *adaptiveParallelism) observe(ctx context.Context, now time.Time,
 		if control == nil || now.Before(state.nextChange) {
 			return change
 		}
+		recoveryLimit := state.limit
+		if recoveryLimit <= 0 {
+			recoveryLimit = runaParallelismCeiling(state.ceiling)
+		}
+		if state.jobs < state.ceiling || !state.boostAllowed {
+			recoveryLimit = min(recoveryLimit, state.ceiling)
+		}
+		if state.jobs >= recoveryLimit {
+			state.ramp.reset()
+			return change
+		}
 		next, _, increase := state.ramp.observe(now, memory, fullAvg10, swap, state.jobs, state.ceiling)
 		if !increase {
+			return change
+		}
+		next = min(next, recoveryLimit)
+		if next <= state.jobs {
 			return change
 		}
 		change.jobs, change.reason = next, "recovery"

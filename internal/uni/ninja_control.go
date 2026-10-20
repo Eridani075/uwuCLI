@@ -37,7 +37,10 @@ func withParallelismFile(args, environment []string, path string) ([]string, str
 	return result, extra
 }
 
-func prepareNinjaParallelismFile(binary string, jobs int) (*ninjaParallelismFile, error) {
+func prepareNinjaParallelismFile(binary string, jobs, ceiling int) (*ninjaParallelismFile, error) {
+	if jobs < 1 || ceiling < jobs {
+		return nil, fmt.Errorf("invalid admission limits: initial=%d ceiling=%d", jobs, ceiling)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	help, _ := exec.CommandContext(ctx, binary, "--help").CombinedOutput()
@@ -49,7 +52,7 @@ func prepareNinjaParallelismFile(binary string, jobs int) (*ninjaParallelismFile
 		return nil, err
 	}
 	control := &ninjaParallelismFile{directory: directory,
-		path: filepath.Join(directory, "jobs"), ceiling: jobs}
+		path: filepath.Join(directory, "jobs"), ceiling: ceiling}
 	if _, err := control.setParallelism(ctx, jobs); err != nil {
 		control.close()
 		return nil, err

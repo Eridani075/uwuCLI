@@ -67,6 +67,22 @@ type runaParallelismRamp struct {
 	lastIncrease time.Time
 }
 
+type cpuHeadroomSampler struct {
+	previous cpuCounters
+	ready    bool
+}
+
+func (sampler *cpuHeadroomSampler) observe(current cpuCounters, cpus int) bool {
+	previous, ready := sampler.previous, sampler.ready
+	sampler.previous, sampler.ready = current, true
+	if !ready || cpus < 1 || current.total <= previous.total || current.idle < previous.idle {
+		return false
+	}
+	// Require at least one idle logical CPU before exceeding initial admission.
+	// I/O wait is not idle capacity available to additional compiler processes.
+	return float64(current.idle-previous.idle)*float64(cpus) >= float64(current.total-previous.total)
+}
+
 func runaParallelismCeiling(inferredJobs int) int {
 	if inferredJobs < 1 {
 		return 0

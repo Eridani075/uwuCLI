@@ -76,7 +76,7 @@ func TestParallelismFileRejectsInvalidLimits(t *testing.T) {
 func checkRuntimeAdmission(t *testing.T, binary string) {
 	t.Helper()
 	workspace := t.TempDir()
-	control, err := prepareNinjaParallelismFile(binary, 3)
+	control, err := prepareNinjaParallelismFile(binary, 3, 4)
 	if err != nil || control == nil {
 		t.Fatalf("runtime admission unavailable: %v", err)
 	}
@@ -90,7 +90,7 @@ func checkRuntimeAdmission(t *testing.T, binary string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, binary, "-j3", "--parallelism-file", control.path)
+	command := exec.CommandContext(ctx, binary, "-j4", "--parallelism-file", control.path)
 	command.Dir = workspace
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
@@ -139,6 +139,10 @@ func checkRuntimeAdmission(t *testing.T, binary string) {
 		t.Fatalf("running job%d was interrupted", job)
 	}
 	initial := waitCount(3)
+	time.Sleep(150 * time.Millisecond)
+	if len(started()) != 3 {
+		t.Fatal("initial admission used the executor ceiling")
+	}
 	if _, err := control.setParallelism(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +154,7 @@ func checkRuntimeAdmission(t *testing.T, binary string) {
 	}
 	// Invalid or missing updates retain the last valid limit, including a value
 	// exceeding the command-line ceiling. They must never stop the executor.
-	if err := os.WriteFile(control.path, []byte("4\n"), 0600); err != nil {
+	if err := os.WriteFile(control.path, []byte("5\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	release(initial[1])
@@ -232,6 +236,8 @@ func checkAssumeExistingRunner(t *testing.T, top, binary string) {
 	script := filepath.Join(directory, "soong_ui.bash")
 	contents := `#!/bin/sh
 set -eu
+test "$1" = --uni-ninja-mode
+printf '%s\n' "$@" > arguments
 for arg do
   case "$arg" in NINJA_EXTRA_ARGS=*) NINJA_EXTRA_ARGS=${arg#NINJA_EXTRA_ARGS=} ;; esac
 done
@@ -265,6 +271,10 @@ exec "$UNI_NINJA_BIN" -j2 -d assumeexisting $NINJA_EXTRA_ARGS
 	if strings.Contains(string(help), "--control-socket") {
 		if !strings.Contains(string(executor), "ninja-wrapper") {
 			t.Fatalf("Runa wrapper was overwritten: %s", executor)
+		}
+		arguments, err := os.ReadFile(filepath.Join(directory, "arguments"))
+		if err != nil || !strings.HasPrefix(string(arguments), "--uni-ninja-mode\n-j3\n") {
+			t.Fatalf("executor ceiling did not reach Soong: %s %v", arguments, err)
 		}
 	} else if strings.TrimSpace(string(executor)) != binary {
 		t.Fatalf("unexpected native executor: %s", executor)

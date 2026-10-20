@@ -58,7 +58,7 @@ func TestAdaptiveParallelismLowersAdmissionAndRetriesMissingControl(t *testing.T
 }
 
 func TestAdaptiveParallelismGraduallyRecoversWithinOneAndHalfTimesUserCeiling(t *testing.T) {
-	state := adaptiveParallelism{jobs: 14, ceiling: 18}
+	state := adaptiveParallelism{jobs: 14, ceiling: 18, boostAllowed: true}
 	control := &testParallelismControl{}
 	memory := MemorySnapshot{Total: 32 * gibibyte, Available: 16 * gibibyte}
 	start := time.Unix(100, 0)
@@ -77,6 +77,39 @@ func TestAdaptiveParallelismGraduallyRecoversWithinOneAndHalfTimesUserCeiling(t 
 	}
 	if state.jobs != 27 || len(control.requests) != 5 {
 		t.Fatalf("recovery did not reach 1.5x the user's requested jobs: jobs=%d requests=%v", state.jobs, control.requests)
+	}
+	state = adaptiveParallelism{jobs: 14, ceiling: 18, limit: 18}
+	control.requests = nil
+	for elapsed := time.Duration(0); elapsed <= 90; elapsed += 15 {
+		state.observe(context.Background(), start.Add(elapsed*time.Second), memory, 0, swapRates{}, false, control)
+	}
+	if state.jobs != 18 || len(control.requests) != 2 {
+		t.Fatalf("recovery exceeded the executor limit: jobs=%d requests=%v", state.jobs, control.requests)
+	}
+	state = adaptiveParallelism{jobs: 14, ceiling: 18, limit: 27}
+	control.requests = nil
+	for elapsed := time.Duration(0); elapsed <= 90; elapsed += 15 {
+		state.observe(context.Background(), start.Add(elapsed*time.Second), memory, 0, swapRates{}, false, control)
+	}
+	if state.jobs != 18 || len(control.requests) != 2 {
+		t.Fatalf("CPU saturation prevented recovery or allowed a boost: jobs=%d requests=%v", state.jobs, control.requests)
+	}
+	for _, sample := range []struct {
+		previous, current cpuCounters
+		cpus              int
+		want              bool
+	}{
+		{cpuCounters{total: 100}, cpuCounters{total: 200}, 18, false},
+		{cpuCounters{total: 100}, cpuCounters{total: 200, idle: 1}, 18, false},
+		{cpuCounters{total: 100}, cpuCounters{total: 200, idle: 6}, 18, true},
+		{cpuCounters{total: 100}, cpuCounters{total: 200, idle: 6}, 2, false},
+		{cpuCounters{total: 100}, cpuCounters{total: 200, iowait: 60}, 18, false},
+		{cpuCounters{total: 200, idle: 20}, cpuCounters{total: 100, idle: 10}, 18, false},
+	} {
+		sampler := cpuHeadroomSampler{previous: sample.previous, ready: true}
+		if got := sampler.observe(sample.current, sample.cpus); got != sample.want {
+			t.Fatalf("CPU headroom %+v = %t", sample, got)
+		}
 	}
 }
 

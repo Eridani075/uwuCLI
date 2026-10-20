@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -262,12 +263,8 @@ func (runner *commandRunner) runReportedAttempt(ctx context.Context, report *deb
 			runaSession = session
 			defer runaSession.close()
 			fmt.Printf("uni: Runa runtime control enabled: executor=%s socket=%s\n", runaSession.binary, runaSession.socket)
-			ceiling := runaParallelismCeiling(maxJobs)
-			fmt.Printf("uni: Runa bounded recovery: ceiling -j%d\n", ceiling)
 			if report != nil {
 				report.event("runa_control result=ready executor=%q", runaSession.binary)
-				report.event("runa_parallelism policy=bounded-recovery inferred_jobs=%d ceiling=%d step=%d interval=%s min_available=max(6GiB,total/5) max_memory_psi_full_avg10=%.1f",
-					maxJobs, ceiling, max(1, maxJobs/6), runaParallelismRampInterval, runaParallelismRampMaxPSI)
 			}
 		}
 	} else if mode == "--uni-ninja-mode" {
@@ -480,6 +477,7 @@ func (runner *commandRunner) runWithTelemetry(ctx context.Context, mode, phase, 
 		}
 	}
 	var admissionControl parallelismControl
+	admissionCeiling := maxJobs
 	if runaSession != nil {
 		admissionControl = runaSession
 	}
@@ -497,7 +495,11 @@ func (runner *commandRunner) runWithTelemetry(ctx context.Context, mode, phase, 
 		}
 		binary, resolveErr := resolveExecutorPath(executor, runner.top)
 		if resolveErr == nil {
-			fileControl, controlErr := prepareNinjaParallelismFile(binary, maxJobs)
+			ceiling := maxJobs
+			if runaSession != nil {
+				ceiling = runaParallelismCeiling(maxJobs)
+			}
+			fileControl, controlErr := prepareNinjaParallelismFile(binary, maxJobs, ceiling)
 			if controlErr != nil {
 				return SegmentSample{}, fmt.Errorf("prepare runtime parallelism: %w", controlErr)
 			}
@@ -508,7 +510,7 @@ func (runner *commandRunner) runWithTelemetry(ctx context.Context, mode, phase, 
 				if controlErr != nil {
 					return SegmentSample{}, controlErr
 				}
-				fileControl, controlErr = prepareNinjaParallelismFile(binary, maxJobs)
+				fileControl, controlErr = prepareNinjaParallelismFile(binary, maxJobs, ceiling)
 				if controlErr != nil || fileControl == nil {
 					return SegmentSample{}, fmt.Errorf("compatibility executor lacks runtime admission: %v", controlErr)
 				}
@@ -518,12 +520,27 @@ func (runner *commandRunner) runWithTelemetry(ctx context.Context, mode, phase, 
 				defer fileControl.close()
 				// File-based admission does not depend on socket connectivity.
 				admissionControl = fileControl
+				admissionCeiling = fileControl.ceiling
+				// -j is the executor's hard ceiling; the prewritten file keeps
+				// initial admission at maxJobs until recovery permits an increase.
+				if admissionCeiling != maxJobs {
+					for index, arg := range cmd.Args {
+						if arg == mode {
+							cmd.Args = append(cmd.Args[:index+1], replaceParallelArgs(cmd.Args[index+1:], admissionCeiling)...)
+							break
+						}
+					}
+				}
 				var extra string
 				cmd.Args, extra = withParallelismFile(cmd.Args, runner.baseEnv, fileControl.path)
 				overrides = append(overrides, "NINJA_EXTRA_ARGS="+extra)
-				fmt.Printf("uni: runtime admission control enabled (-j%d ceiling); running tasks are preserved\n", maxJobs)
+				fmt.Printf("uni: runtime admission control enabled (-j%d initial, -j%d ceiling); running tasks are preserved\n", maxJobs, admissionCeiling)
 			}
 		}
+	}
+	if report != nil && mode == "--uni-ninja-mode" {
+		report.event("runtime_admission initial_jobs=%d ceiling=%d step=%d interval=%s min_available=max(6GiB,total/5) min_idle_cpus=1 max_memory_psi_full_avg10=%.1f",
+			maxJobs, admissionCeiling, max(1, maxJobs/6), runaParallelismRampInterval, runaParallelismRampMaxPSI)
 	}
 	if runner.autoCcacheCompilerCheck {
 		overrides = append(overrides, "CCACHE_COMPILERCHECK=mtime")
@@ -602,8 +619,9 @@ func (runner *commandRunner) runWithTelemetry(ctx context.Context, mode, phase, 
 		defer close(cancelFinished)
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
-		state := adaptiveParallelism{jobs: maxJobs, ceiling: maxJobs}
+		state := adaptiveParallelism{jobs: maxJobs, ceiling: maxJobs, limit: admissionCeiling}
 		var swapSampler swapRateSampler
+		var cpuSampler cpuHeadroomSampler
 		for {
 			select {
 			case <-ctx.Done():
@@ -617,6 +635,13 @@ func (runner *commandRunner) runWithTelemetry(ctx context.Context, mode, phase, 
 			case now := <-ticker.C:
 				if mode != "--uni-ninja-mode" {
 					continue
+				}
+				cpu, cpuErr := readCPUCounters()
+				state.boostAllowed = false
+				if cpuErr == nil {
+					state.boostAllowed = cpuSampler.observe(cpu, runtime.NumCPU())
+				} else {
+					cpuSampler = cpuHeadroomSampler{}
 				}
 				memory, memoryErr := ReadMemorySnapshot()
 				psi, psiErr := readMemoryPSI()
@@ -649,11 +674,11 @@ func (runner *commandRunner) runWithTelemetry(ctx context.Context, mode, phase, 
 						tui.updateParallelism(change.jobs)
 					}
 					fmt.Printf("uni: %s: admission parallelism %d -> %d (ceiling=%d, available=%s, memory PSI=%.1f); running tasks are preserved\n",
-						change.reason, change.previous, change.jobs, runaParallelismCeiling(maxJobs), formatBytes(memory.Available), psi.full.avg10)
+						change.reason, change.previous, change.jobs, admissionCeiling, formatBytes(memory.Available), psi.full.avg10)
 				}
 				if report != nil && change.reason != "" {
-					report.event("runtime_parallelism reason=%s previous=%d jobs=%d ceiling=%d available=%q psi_full_avg10=%.1f response=%q error=%q",
-						change.reason, change.previous, state.jobs, runaParallelismCeiling(maxJobs), formatBytes(memory.Available), psi.full.avg10, change.response, fmt.Sprint(change.err))
+					report.event("runtime_parallelism reason=%s previous=%d jobs=%d ceiling=%d boost_allowed=%t available=%q psi_full_avg10=%.1f response=%q error=%q",
+						change.reason, change.previous, state.jobs, admissionCeiling, state.boostAllowed, formatBytes(memory.Available), psi.full.avg10, change.response, fmt.Sprint(change.err))
 				}
 			}
 		}
