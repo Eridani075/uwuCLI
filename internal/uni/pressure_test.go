@@ -170,7 +170,7 @@ func TestPressureGuardStopsBeforeOOMDWithAvailableMemory(t *testing.T) {
 	}
 }
 
-func TestPressureGuardUsesSwapOnlyWithLowMemoryAndPSI(t *testing.T) {
+func TestPressureGuardRequiresSustainedSwapAndPSI(t *testing.T) {
 	start := time.Unix(100, 0)
 	activeSwap := swapRates{inBytesPerSecond: runaSwapInPressureRate}
 	var guard memoryPressureGuard
@@ -195,6 +195,19 @@ func TestPressureGuardUsesSwapOnlyWithLowMemoryAndPSI(t *testing.T) {
 	}
 	if !guard.observe(severeStart.Add(20*time.Second), low, 25, activeSwap, false) {
 		t.Fatal("sustained low-memory PSI and swap activity was ignored")
+	}
+	guard = memoryPressureGuard{}
+	plenty.Available = 14 * gibibyte
+	for i := 0; i < 10; i++ {
+		if guard.observe(start.Add(time.Duration(2*i)*time.Second), plenty, 32.57, activeSwap, false) {
+			t.Fatal("brief reclaim stalls reduced parallelism")
+		}
+	}
+	if !guard.observe(start.Add(20*time.Second), plenty, 32.57, activeSwap, false) {
+		t.Fatal("available memory masked sustained swap-backed reclaim stalls")
+	}
+	if guard.observe(start.Add(22*time.Second), plenty, 0, activeSwap, false) || !guard.since.IsZero() {
+		t.Fatal("swap without stalls retained the pressure timer")
 	}
 }
 

@@ -55,6 +55,16 @@ func TestAdaptiveParallelismLowersAdmissionAndRetriesMissingControl(t *testing.T
 	if change.err != nil || change.jobs != 14 || state.jobs != 14 {
 		t.Fatalf("reconnected control did not lower admission: %+v", change)
 	}
+	state = adaptiveParallelism{jobs: 18, ceiling: 18}
+	control.requests = nil
+	memory.Available = 14 * gibibyte
+	swap := swapRates{outBytesPerSecond: 64 * 1024 * 1024}
+	for elapsed := time.Duration(0); elapsed <= 20; elapsed += 2 {
+		state.observe(context.Background(), start.Add(elapsed*time.Second), memory, 32.57, swap, false, control)
+	}
+	if state.jobs != 14 || len(control.requests) != 1 {
+		t.Fatalf("reclaim stalls did not lower admission: jobs=%d requests=%v", state.jobs, control.requests)
+	}
 }
 
 func TestAdaptiveParallelismGraduallyRecoversWithinOneAndHalfTimesUserCeiling(t *testing.T) {

@@ -145,7 +145,8 @@ func (guard *memoryPressureGuard) observe(now time.Time, memory MemorySnapshot, 
 	}
 	reserve := max(3*gibibyte, memory.Total/8)
 	pressured := memory.Available < reserve && fullAvg10 >= 20
-	if memory.Available < memory.Total/3 && fullAvg10 >= 20 && swap.active() {
+	// Available memory does not rule out swap-backed reclaim stalls.
+	if fullAvg10 >= 20 && swap.active() {
 		pressured = true
 	}
 	if memory.Available < memory.Total/3 && fullAvg10 >= 45 {
